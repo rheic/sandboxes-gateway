@@ -63,7 +63,7 @@ jobs:
       - name: Generate SBOM
         run: cyclonedx-gomod mod -json -licenses -type library -output dist/sandboxes-gateway.cdx.json .
       - name: Generate checksums
-        run: sha256sum dist/* > dist/SHA256SUMS
+        run: (cd dist && sha256sum * > SHA256SUMS)
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: dist/sandboxes-gateway-darwin-arm64,dist/sandboxes-gateway-darwin-amd64,dist/sandboxes-gateway-linux-arm64,dist/sandboxes-gateway-linux-amd64,dist/sandboxes-gateway-windows-amd64.exe
@@ -105,7 +105,7 @@ jobs:
           name: release-assets
           path: dist
       - name: Verify downloaded release assets
-        run: sha256sum -c dist/SHA256SUMS
+        run: (cd dist && sha256sum -c SHA256SUMS)
       - name: Publish release assets without replacing existing files
         env:
           GH_TOKEN: ${{ github.token }}
