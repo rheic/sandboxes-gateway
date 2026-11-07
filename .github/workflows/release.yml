@@ -1,0 +1,79 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable module tag to build and attest
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag_commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          head_commit=$(git rev-parse HEAD)
+          [[ "$tag_commit" == "$head_commit" ]]
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/amd64; do
+            os=${target%/*}
+            arch=${target#*/}
+            ext=
+            if [[ "$os" == windows ]]; then ext=.exe; fi
+            out="dist/sandboxes-gateway-${os}-${arch}${ext}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags="-s -w -X github.com/rheic/sandboxes-gateway/internal/version.Version=$VERSION" \
+              -o "$out" ./cmd/sandboxes-gateway
+          done
+          actual=$(dist/sandboxes-gateway-linux-amd64)
+          [[ "$actual" == "sandboxes-gateway $VERSION" ]]
+          (cd dist && sha256sum sandboxes-gateway-* > SHA256SUMS)
+      - name: Install CycloneDX generator
+        run: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.12.0
+      - name: Generate SBOM
+        run: cyclonedx-gomod mod -json -licenses -type library -output dist/sandboxes-gateway.cdx.json .
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+      - uses: actions/attest@v4
+        with:
+          subject-path: dist/sandboxes-gateway-*
+          sbom-path: dist/sandboxes-gateway.cdx.json
+      - name: Publish release assets without replacing existing files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "$TAG" --generate-notes
+          fi
