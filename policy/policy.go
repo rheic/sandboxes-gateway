@@ -118,9 +118,6 @@ func validateEnforcementRule(rule Rule) error {
 	if rule.Domain == "" {
 		return nil
 	}
-	if strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
-		return errors.New("UDP domain policy is unsupported")
-	}
 	if net.ParseIP(strings.TrimSpace(rule.Domain)) != nil {
 		return errors.New("domain rule must not be an IP literal; use a CIDR rule")
 	}

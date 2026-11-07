@@ -27,7 +27,7 @@ func TestRenderConfig(t *testing.T) {
 			{Protocol: "udp", CIDR: "10.1.0.0/16", Port: 53},
 		},
 		Ports: []policy.Port{{Host: 8080, Guest: 3000}},
-	}, "1.1.1.1:53")
+	}, "1.1.1.1:53", false)
 	for _, want := range []string{
 		"egressPolicy:",
 		`revision: "2"`,
@@ -46,6 +46,23 @@ func TestRenderConfig(t *testing.T) {
 			t.Fatalf("missing %q in config:\n%s", want, cfg)
 		}
 	}
+	if strings.Contains(cfg, "ipv6Enabled:") {
+		t.Fatal("IPv6 must remain disabled by default")
+	}
+}
+
+func TestRenderConfigEnablesExperimentalIPv6Explicitly(t *testing.T) {
+	cfg := renderConfig(policy.Policy{Revision: 1, SandboxID: "ipv6"}, "", true)
+	if !strings.Contains(cfg, "  ipv6Enabled: true\n") {
+		t.Fatalf("explicit IPv6 config missing:\n%s", cfg)
+	}
+	manager, err := New(Config{GVProxy: "/bin/true", RunDir: t.TempDir(), IPv6Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manager.IPv6Enabled() {
+		t.Fatal("manager failed to report explicit IPv6 capability")
+	}
 }
 
 func TestRenderConfigSupportsLoopbackIPv6AndUDP(t *testing.T) {
@@ -56,8 +73,8 @@ func TestRenderConfigSupportsLoopbackIPv6AndUDP(t *testing.T) {
 			{Host: 8080, Guest: 3000, Proto: "tcp", HostIP: "::1"},
 			{Host: 8081, Guest: 3001, Proto: "udp", HostIP: "127.0.0.1"},
 		},
-	}, "")
-	for _, want := range []string{`"[::1]:8080": "192.168.127.3:3000"`, `"udp:127.0.0.1:8081": "192.168.127.3:3001"`} {
+	}, "", false)
+	for _, want := range []string{`"[::1]:8080": "guest-ipv6:3000"`, `"udp:127.0.0.1:8081": "192.168.127.3:3001"`} {
 		if !strings.Contains(cfg, want) {
 			t.Fatalf("missing %q in config:\n%s", want, cfg)
 		}
@@ -73,7 +90,7 @@ func TestDesiredForwardsKeysIncludeHostIP(t *testing.T) {
 	if len(forwards) != 3 {
 		t.Fatalf("forwards=%+v", forwards)
 	}
-	if forwards["tcp|127.0.0.1:8080"].Remote != "192.168.127.3:3000" || forwards["tcp|[::1]:8080"].Remote != "192.168.127.3:3001" || forwards["udp|[::1]:8080"].Remote != "192.168.127.3:3002" {
+	if forwards["tcp|127.0.0.1:8080"].Remote != "192.168.127.3:3000" || forwards["tcp|[::1]:8080"].Remote != "guest-ipv6:3001" || forwards["udp|[::1]:8080"].Remote != "guest-ipv6:3002" {
 		t.Fatalf("forwards=%+v", forwards)
 	}
 }
@@ -115,7 +132,7 @@ func TestGatewayFilesRejectLinksWithoutChangingTargets(t *testing.T) {
 			if err := tc.link(target, path); err != nil {
 				t.Fatal(err)
 			}
-			if err := writeConfig(path, policy.Policy{SandboxID: "dev"}, ""); err == nil {
+			if err := writeConfig(path, policy.Policy{SandboxID: "dev"}, "", false); err == nil {
 				t.Fatal("linked config accepted")
 			}
 			data, err := os.ReadFile(target)
@@ -125,7 +142,7 @@ func TestGatewayFilesRejectLinksWithoutChangingTargets(t *testing.T) {
 		})
 	}
 	path := filepath.Join(dir, "valid.yaml")
-	if err := writeConfig(path, policy.Policy{SandboxID: "dev"}, ""); err != nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "dev"}, "", false); err != nil {
 		t.Fatalf("private regular config rejected: %v", err)
 	}
 }
@@ -153,7 +170,6 @@ func TestValidatePolicyFailsClosedForUnsupportedRules(t *testing.T) {
 		{name: "missing cidr", rule: policy.Rule{Protocol: "tcp", Port: 443}},
 		{name: "invalid cidr", rule: policy.Rule{Protocol: "tcp", CIDR: "registry.example", Port: 443}},
 		{name: "invalid protocol", rule: policy.Rule{Protocol: "icmp", CIDR: "192.0.2.1/32"}},
-		{name: "unsupported UDP domain", rule: policy.Rule{Protocol: "udp", Domain: "api.example.test"}},
 		{name: "ip literal as domain", rule: policy.Rule{Protocol: "tcp", Domain: "192.0.2.10", Port: 443}},
 	}
 	for _, tt := range tests {
@@ -183,15 +199,15 @@ func TestDomainPolicyRenderAndUpstreamRequirement(t *testing.T) {
 	cfg := renderConfig(policy.Policy{
 		Revision: 4, SandboxID: "domains",
 		Allow: []policy.Rule{{Protocol: "tcp", Domain: "*.example.com", Port: 443}},
-	}, "1.1.1.1:53")
+	}, "1.1.1.1:53", false)
 	if !strings.Contains(cfg, `domain: "*.example.com"`) {
 		t.Fatalf("domain missing:\n%s", cfg)
 	}
 	path := filepath.Join(t.TempDir(), "gateway.yaml")
-	if err := writeConfig(path, policy.Policy{SandboxID: "domains", Allow: []policy.Rule{{Protocol: "tcp", Domain: "example.com"}}}, ""); err == nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "domains", Allow: []policy.Rule{{Protocol: "tcp", Domain: "example.com"}}}, "", false); err == nil {
 		t.Fatal("domain policy without DNS upstream was accepted")
 	}
-	if err := writeConfig(path, policy.Policy{SandboxID: "domains", Allow: []policy.Rule{{Protocol: "tcp", Domain: "example.com"}}}, "1.1.1.1:53"); err != nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "domains", Allow: []policy.Rule{{Protocol: "tcp", Domain: "example.com"}}}, "1.1.1.1:53", false); err != nil {
 		t.Fatal(err)
 	}
 }

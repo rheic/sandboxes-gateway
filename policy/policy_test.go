@@ -40,7 +40,6 @@ func TestUnsupportedDomainConfigurationsFailClosed(t *testing.T) {
 		allow []Rule
 		deny  []Rule
 	}{
-		{"udp domain", []Rule{{Protocol: "udp", Domain: "api.example.test"}}, nil},
 		{"overlapping CIDR and domain deny", []Rule{{Protocol: "tcp", CIDR: "0.0.0.0/0"}}, []Rule{{Protocol: "tcp", Domain: "secret.example.test", Port: 443}}},
 	}
 	for _, tt := range tests {
@@ -59,6 +58,23 @@ func TestUnsupportedDomainConfigurationsFailClosed(t *testing.T) {
 	}
 	if got := Check(allowed, nil, Request{Protocol: "tcp", Domain: "api.example.test", Port: 443}); !got.Allow {
 		t.Fatalf("supported positive control denied: %+v", got)
+	}
+}
+
+func TestUDPDomainPolicyAllowsOnlyMatchingQUICSNI(t *testing.T) {
+	allow := []Rule{{ID: "h3", Protocol: "udp", Domain: "h3.example.test", Port: 18443}}
+	deny := []Rule{{ID: "wrong-h3", Protocol: "udp", Domain: "blocked.example.test", Port: 18443}}
+	if err := ValidateEnforcement(allow, deny); err != nil {
+		t.Fatalf("valid UDP domain policy rejected: %v", err)
+	}
+	if got := Check(allow, deny, Request{Protocol: "udp", Domain: "h3.example.test", Port: 18443}); !got.Allow || got.RuleID != "h3" {
+		t.Fatalf("QUIC positive control denied: %+v", got)
+	}
+	if got := Check(allow, deny, Request{Protocol: "udp", Domain: "other.example.test", Port: 18443}); got.Allow {
+		t.Fatalf("wrong SNI was allowed: %+v", got)
+	}
+	if got := Check(allow, deny, Request{Protocol: "udp", Domain: "blocked.example.test", Port: 18443}); got.Allow || got.RuleID != "wrong-h3" {
+		t.Fatalf("QUIC domain deny did not win: %+v", got)
 	}
 }
 

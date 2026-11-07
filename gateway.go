@@ -46,6 +46,9 @@ type Config struct {
 	Supervisor  string
 	RunDir      string
 	DNSUpstream string
+	// IPv6Enabled enables the experimental guest IPv6 datapath. It remains off
+	// unless the daemon was explicitly started with its IPv6 acceptance flag.
+	IPv6Enabled bool
 	// OnExit is called with the sandbox name when a running gateway exits
 	// unexpectedly. It runs without the manager lock held.
 	OnExit func(name string)
@@ -96,6 +99,30 @@ func New(cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("run dir is required")
 	}
 	return &Manager{cfg: cfg, procs: make(map[string]process), starting: make(map[string]chan struct{})}, nil
+}
+
+// IPv6Enabled reports whether this manager starts gvproxy with the IPv6 datapath.
+func (m *Manager) IPv6Enabled() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg.IPv6Enabled
+}
+
+// SetIPv6Enabled configures the experimental datapath before any sandbox starts.
+func (m *Manager) SetIPv6Enabled(enabled bool) error {
+	if m == nil {
+		return errors.New("gateway manager is nil")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || len(m.procs) != 0 || len(m.starting) != 0 {
+		return errors.New("IPv6 setting is immutable after gateway startup")
+	}
+	m.cfg.IPv6Enabled = enabled
+	return nil
 }
 
 // Start launches a default-deny gateway for one sandbox.
@@ -224,7 +251,7 @@ func ensureSocketPathAvailable(socket string) error {
 
 func (m *Manager) launch(ctx context.Context, p policy.Policy, socket, cfgPath, logPath, apiSocket, tokenPath string) (Network, error) {
 	name := p.SandboxID
-	if err := writeConfig(cfgPath, p, m.cfg.DNSUpstream); err != nil {
+	if err := writeConfig(cfgPath, p, m.cfg.DNSUpstream, m.cfg.IPv6Enabled); err != nil {
 		return Network{}, err
 	}
 	apiToken, err := createGatewayAPIToken(tokenPath)
@@ -483,7 +510,7 @@ func (m *Manager) Reload(ctx context.Context, p policy.Policy) error {
 	if p.Revision <= proc.revision {
 		return fmt.Errorf("policy revision %d must advance past %d", p.Revision, proc.revision)
 	}
-	if err := writeConfig(proc.cfgPath, p, m.cfg.DNSUpstream); err != nil {
+	if err := writeConfig(proc.cfgPath, p, m.cfg.DNSUpstream, m.cfg.IPv6Enabled); err != nil {
 		return err
 	}
 	offset, err := fileSize(proc.logPath)
@@ -572,7 +599,7 @@ func MAC(name string) string {
 	return fmt.Sprintf("fa:43:25:%02x:%02x:%02x", sum[0], sum[1], sum[2])
 }
 
-func writeConfig(path string, p policy.Policy, dnsUpstream string) error {
+func writeConfig(path string, p policy.Policy, dnsUpstream string, ipv6Enabled bool) error {
 	if err := validatePolicy(p); err != nil {
 		return err
 	}
@@ -595,7 +622,7 @@ func writeConfig(path string, p policy.Policy, dnsUpstream string) error {
 	if err := file.Truncate(0); err != nil {
 		return fmt.Errorf("truncate gateway config: %w", err)
 	}
-	if _, err := file.WriteString(renderConfig(p, dnsUpstream)); err != nil {
+	if _, err := file.WriteString(renderConfig(p, dnsUpstream, ipv6Enabled)); err != nil {
 		return fmt.Errorf("write gateway config: %w", err)
 	}
 	return nil
@@ -724,11 +751,14 @@ func portProto(port policy.Port) string {
 	return protocol
 }
 
-func renderConfig(p policy.Policy, dnsUpstream string) string {
+func renderConfig(p policy.Policy, dnsUpstream string, ipv6Enabled bool) string {
 	var b strings.Builder
 	b.WriteString("stack:\n")
 	b.WriteString("  subnet: 192.168.127.0/24\n")
 	b.WriteString("  gatewayIP: 192.168.127.1\n")
+	if ipv6Enabled {
+		b.WriteString("  ipv6Enabled: true\n")
+	}
 	b.WriteString("  deviceIP: 192.168.127.2\n")
 	b.WriteString("  hostIP: 192.168.127.254\n")
 	b.WriteString("  mtu: 1500\n")
@@ -746,7 +776,7 @@ func renderConfig(p policy.Policy, dnsUpstream string) string {
 			}
 			fmt.Fprintf(&b, "    %s: %s\n",
 				strconv.Quote(local),
-				strconv.Quote(fmt.Sprintf("%s:%d", guestIP, port.Guest)))
+				strconv.Quote(guestForwardRemote(port)))
 		}
 	}
 	b.WriteString("  egressPolicy:\n")
@@ -844,9 +874,16 @@ func desiredForwards(ports []policy.Port) map[string]forwardAPI {
 		}
 		local := portLocal(port)
 		key := protocol + "|" + local
-		desired[key] = forwardAPI{Local: local, Remote: fmt.Sprintf("%s:%d", guestIP, port.Guest), Protocol: protocol}
+		desired[key] = forwardAPI{Local: local, Remote: guestForwardRemote(port), Protocol: protocol}
 	}
 	return desired
+}
+
+func guestForwardRemote(port policy.Port) string {
+	if ip := net.ParseIP(port.HostIP); ip != nil && ip.Equal(net.IPv6loopback) {
+		return fmt.Sprintf("guest-ipv6:%d", port.Guest)
+	}
+	return fmt.Sprintf("%s:%d", guestIP, port.Guest)
 }
 
 func portLocal(port policy.Port) string {
