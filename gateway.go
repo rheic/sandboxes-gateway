@@ -30,6 +30,11 @@ const (
 	guestIP     = "192.168.127.3"
 	deviceIP    = "192.168.127.2"
 	gatewayIP   = "192.168.127.1"
+	// IPv6 host-services translation uses a guest-visible ULA outside the
+	// guest /64. It is rendered only when the experimental IPv6 capability is
+	// explicitly enabled; it is not a default NAT66 route.
+	ipv6HostServicesGuest = "fd72:6865:6963:1::2"
+	ipv6HostServicesHost  = "::1"
 )
 
 // ErrWindowsTransportUnavailable reports that the Windows guest-to-host
@@ -834,6 +839,12 @@ func renderConfig(p policy.Policy, dnsUpstream string, ipv6Enabled bool) string 
 		fmt.Fprintf(&b, "  dnsUpstream: %s\n", strconv.Quote(dnsUpstream))
 	}
 	b.WriteString("  nat:\n    192.168.127.254: 127.0.0.1\n")
+	if ipv6Enabled {
+		// Explicit host-services mapping, not NAT66 by default. The guest
+		// destination is outside the guest /64 so policy and audit keep the
+		// pre-NAT guest-visible address.
+		fmt.Fprintf(&b, "    %s: %s\n", strconv.Quote(ipv6HostServicesGuest), strconv.Quote(ipv6HostServicesHost))
+	}
 	b.WriteString("  gatewayVirtualIPs:\n    - 192.168.127.254\n")
 	if len(p.Ports) > 0 {
 		b.WriteString("  forwards:\n")
