@@ -8,10 +8,11 @@ Status: pre-alpha.
 
 Host network policy gateway. The experimental gvproxy integration supports
 IPv4 TCP/UDP CIDR rules and domain-only TCP rules with DNS and TLS SNI checks.
-Domain UDP rules are rejected until the gateway verifies a QUIC-capable runtime;
-domain denies overlapping a direct IP allow are also rejected. Experimental
-IPv6 policy and guest loopback forwarding require an explicit capability flag;
-the default keeps the IPv6 datapath disabled. HTTP Host/method/path and CONNECT
+Domain UDP rules require the experimental QUIC capability; without it they are
+rejected. Domain denies overlapping a direct IP allow are also rejected.
+Experimental IPv6 policy and guest loopback forwarding require an explicit
+capability flag; QUIC policy requires its own explicit flag. The default keeps
+all of them disabled. HTTP Host/method/path and CONNECT
 enforcement are not implemented or verified. Audit failure behavior has not
 been fully validated.
 

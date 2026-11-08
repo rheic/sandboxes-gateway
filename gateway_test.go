@@ -132,7 +132,7 @@ func TestGatewayFilesRejectLinksWithoutChangingTargets(t *testing.T) {
 			if err := tc.link(target, path); err != nil {
 				t.Fatal(err)
 			}
-			if err := writeConfig(path, policy.Policy{SandboxID: "dev"}, "", false); err == nil {
+			if err := writeConfig(path, policy.Policy{SandboxID: "dev"}, "", false, false); err == nil {
 				t.Fatal("linked config accepted")
 			}
 			data, err := os.ReadFile(target)
@@ -142,7 +142,7 @@ func TestGatewayFilesRejectLinksWithoutChangingTargets(t *testing.T) {
 		})
 	}
 	path := filepath.Join(dir, "valid.yaml")
-	if err := writeConfig(path, policy.Policy{SandboxID: "dev"}, "", false); err != nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "dev"}, "", false, false); err != nil {
 		t.Fatalf("private regular config rejected: %v", err)
 	}
 }
@@ -176,7 +176,7 @@ func TestValidatePolicyFailsClosedForUnsupportedRules(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validatePolicy(policy.Policy{Allow: []policy.Rule{tt.rule}}); err == nil {
+			if err := validatePolicy(policy.Policy{Allow: []policy.Rule{tt.rule}}, false); err == nil {
 				t.Fatal("unsupported policy must be rejected")
 			}
 		})
@@ -192,10 +192,10 @@ func TestIPv6HostForwardRequiresExplicitCapability(t *testing.T) {
 		t.Fatalf("explicit IPv6 host forward rejected: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "gateway.yaml")
-	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Ports: ports}, "", false); err == nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Ports: ports}, "", false, false); err == nil {
 		t.Fatal("disabled IPv6 host forward was rendered")
 	}
-	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Ports: ports}, "", true); err != nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Ports: ports}, "", true, false); err != nil {
 		t.Fatalf("explicit IPv6 host forward rejected: %v", err)
 	}
 }
@@ -212,14 +212,14 @@ func TestIPv6CIDRRuleRequiresExplicitCapability(t *testing.T) {
 		t.Fatalf("IPv4 CIDR rejected: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "gateway.yaml")
-	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Allow: rules}, "", false); err == nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Allow: rules}, "", false, false); err == nil {
 		t.Fatal("disabled IPv6 CIDR rule was rendered")
 	}
 	cfg, err := os.ReadFile(path)
 	if err == nil && strings.Contains(string(cfg), "2001:db8::/32") {
 		t.Fatal("disabled IPv6 CIDR rule reached the gateway config")
 	}
-	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Allow: rules}, "", true); err != nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Allow: rules}, "", true, false); err != nil {
 		t.Fatalf("explicit IPv6 CIDR rule rejected: %v", err)
 	}
 	cfg, err = os.ReadFile(path)
@@ -236,11 +236,11 @@ func TestValidatePolicyRejectsDomainDenyOverlappingIPAllow(t *testing.T) {
 		Allow: []policy.Rule{{Protocol: "tcp", CIDR: "192.0.2.0/24", Port: 443}},
 		Deny:  []policy.Rule{{Protocol: "tcp", Domain: "blocked.example.test", Port: 443}},
 	}
-	if err := validatePolicy(p); err == nil {
+	if err := validatePolicy(p, false); err == nil {
 		t.Fatal("overlapping domain deny and IP allow accepted")
 	}
 	p.Allow[0].Port = 8443
-	if err := validatePolicy(p); err != nil {
+	if err := validatePolicy(p, false); err != nil {
 		t.Fatalf("non-overlapping positive control rejected: %v", err)
 	}
 }
@@ -254,10 +254,10 @@ func TestDomainPolicyRenderAndUpstreamRequirement(t *testing.T) {
 		t.Fatalf("domain missing:\n%s", cfg)
 	}
 	path := filepath.Join(t.TempDir(), "gateway.yaml")
-	if err := writeConfig(path, policy.Policy{SandboxID: "domains", Allow: []policy.Rule{{Protocol: "tcp", Domain: "example.com"}}}, "", false); err == nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "domains", Allow: []policy.Rule{{Protocol: "tcp", Domain: "example.com"}}}, "", false, false); err == nil {
 		t.Fatal("domain policy without DNS upstream was accepted")
 	}
-	if err := writeConfig(path, policy.Policy{SandboxID: "domains", Allow: []policy.Rule{{Protocol: "tcp", Domain: "example.com"}}}, "1.1.1.1:53", false); err != nil {
+	if err := writeConfig(path, policy.Policy{SandboxID: "domains", Allow: []policy.Rule{{Protocol: "tcp", Domain: "example.com"}}}, "1.1.1.1:53", false, false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -487,5 +487,38 @@ func TestWatchIgnoresOrderlyStop(t *testing.T) {
 	case name := <-exited:
 		t.Fatalf("orderly stop reported as loss: %s", name)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestQUICDomainPolicyRequiresExplicitCapability(t *testing.T) {
+	rule := policy.Rule{Protocol: "udp", Domain: "h3.example.test", Port: 443}
+	path := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := writeConfig(path, policy.Policy{SandboxID: "quic", Allow: []policy.Rule{rule}}, "1.1.1.1:53", false, false); err == nil {
+		t.Fatal("UDP domain rule accepted without the QUIC capability")
+	}
+	if err := writeConfig(path, policy.Policy{SandboxID: "quic", Allow: []policy.Rule{rule}}, "1.1.1.1:53", false, true); err != nil {
+		t.Fatalf("explicit QUIC UDP domain rule rejected: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`protocol: "udp"`, `domain: "h3.example.test"`, `port: 443`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("missing %q in config:\n%s", want, data)
+		}
+	}
+	manager, err := New(Config{GVProxy: "/bin/true", RunDir: t.TempDir(), QUICEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manager.QUICEnabled() {
+		t.Fatal("manager failed to report the explicit QUIC capability")
+	}
+	if err := manager.SetQUICEnabled(false); err != nil {
+		t.Fatalf("disable QUIC before startup: %v", err)
+	}
+	if manager.QUICEnabled() {
+		t.Fatal("QUIC capability stayed enabled after SetQUICEnabled(false)")
 	}
 }

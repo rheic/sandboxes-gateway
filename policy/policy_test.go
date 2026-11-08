@@ -118,3 +118,20 @@ func FuzzDomainMatches(f *testing.F) {
 		_ = domainMatches(pattern, name)
 	})
 }
+
+func TestQUICCapabilityEnablesUDPDomainPolicy(t *testing.T) {
+	allow := []Rule{{ID: "h3", Protocol: "udp", Domain: "h3.example.test", Port: 443}}
+	deny := []Rule{{ID: "blocked-h3", Protocol: "udp", Domain: "blocked.example.test", Port: 443}}
+	if err := ValidateEnforcementWith(allow, deny, Capabilities{QUIC: true}); err != nil {
+		t.Fatalf("verified QUIC UDP domain policy rejected: %v", err)
+	}
+	if err := ValidateEnforcementWith(allow, deny, Capabilities{}); err == nil {
+		t.Fatal("UDP domain policy accepted without the QUIC capability")
+	}
+	if err := ValidateEnforcementWith(allow, deny, Capabilities{QUIC: true}); err != nil {
+		t.Fatalf("positive control rejected: %v", err)
+	}
+	if err := ValidateEnforcementWith([]Rule{{Protocol: "udp", Domain: "192.0.2.10"}}, nil, Capabilities{QUIC: true}); err == nil {
+		t.Fatal("IP literal domain accepted with QUIC enabled")
+	}
+}
