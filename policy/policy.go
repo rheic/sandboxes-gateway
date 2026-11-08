@@ -93,11 +93,25 @@ func Check(allow, deny []Rule, req Request) Decision {
 	return Decision{Allow: false, Reason: "default deny"}
 }
 
+// Capabilities describes datapath features the caller has verified. The zero
+// value keeps every experimental feature disabled.
+type Capabilities struct {
+	// QUIC enables UDP domain rules backed by a verified QUIC Initial parser.
+	QUIC bool
+}
+
 // ValidateEnforcement rejects combinations the current gateway cannot enforce.
+// It keeps every experimental feature disabled.
 func ValidateEnforcement(allow, deny []Rule) error {
+	return ValidateEnforcementWith(allow, deny, Capabilities{})
+}
+
+// ValidateEnforcementWith rejects combinations the gateway cannot enforce with
+// the supplied capabilities. A disabled capability always fails closed.
+func ValidateEnforcementWith(allow, deny []Rule, capabilities Capabilities) error {
 	for _, rules := range [][]Rule{allow, deny} {
 		for _, rule := range rules {
-			if err := validateEnforcementRule(rule); err != nil {
+			if err := validateEnforcementRule(rule, capabilities); err != nil {
 				return err
 			}
 		}
@@ -128,11 +142,11 @@ func ambiguousIPv4MappedPrefix(cidr string) bool {
 	return masked.Addr().Is4In6() || (prefix.Bits() < 96 && masked.Contains(mappedBase))
 }
 
-func validateEnforcementRule(rule Rule) error {
+func validateEnforcementRule(rule Rule, capabilities Capabilities) error {
 	if rule.Domain != "" && net.ParseIP(strings.TrimSpace(rule.Domain)) != nil {
 		return errors.New("domain rule must not be an IP literal; use a CIDR rule")
 	}
-	if rule.Domain != "" && normalizedProtocol(rule.Protocol) == "udp" {
+	if rule.Domain != "" && normalizedProtocol(rule.Protocol) == "udp" && !capabilities.QUIC {
 		return errors.New("UDP domain policy requires a verified QUIC-capable runtime")
 	}
 	if rule.CIDR != "" && ambiguousIPv4MappedPrefix(rule.CIDR) {

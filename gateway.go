@@ -49,6 +49,10 @@ type Config struct {
 	// IPv6Enabled enables the experimental guest IPv6 datapath. It remains off
 	// unless the daemon was explicitly started with its IPv6 acceptance flag.
 	IPv6Enabled bool
+	// QUICEnabled accepts UDP domain rules backed by the verified QUIC Initial
+	// parser. It remains off unless the daemon was explicitly started with its
+	// QUIC acceptance flag.
+	QUICEnabled bool
 	// OnExit is called with the sandbox name when a running gateway exits
 	// unexpectedly. It runs without the manager lock held.
 	OnExit func(name string)
@@ -122,6 +126,30 @@ func (m *Manager) SetIPv6Enabled(enabled bool) error {
 		return errors.New("IPv6 setting is immutable after gateway startup")
 	}
 	m.cfg.IPv6Enabled = enabled
+	return nil
+}
+
+// QUICEnabled reports whether this manager accepts UDP domain policy.
+func (m *Manager) QUICEnabled() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg.QUICEnabled
+}
+
+// SetQUICEnabled configures the experimental QUIC policy before any sandbox starts.
+func (m *Manager) SetQUICEnabled(enabled bool) error {
+	if m == nil {
+		return errors.New("gateway manager is nil")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || len(m.procs) != 0 || len(m.starting) != 0 {
+		return errors.New("QUIC setting is immutable after gateway startup")
+	}
+	m.cfg.QUICEnabled = enabled
 	return nil
 }
 
@@ -251,7 +279,7 @@ func ensureSocketPathAvailable(socket string) error {
 
 func (m *Manager) launch(ctx context.Context, p policy.Policy, socket, cfgPath, logPath, apiSocket, tokenPath string) (Network, error) {
 	name := p.SandboxID
-	if err := writeConfig(cfgPath, p, m.cfg.DNSUpstream, m.cfg.IPv6Enabled); err != nil {
+	if err := writeConfig(cfgPath, p, m.cfg.DNSUpstream, m.cfg.IPv6Enabled, m.cfg.QUICEnabled); err != nil {
 		return Network{}, err
 	}
 	apiToken, err := createGatewayAPIToken(tokenPath)
@@ -504,13 +532,13 @@ func (m *Manager) Reload(ctx context.Context, p policy.Policy) error {
 	if p.Revision <= 0 {
 		return fmt.Errorf("policy revision must be positive")
 	}
-	if err := validatePolicy(p); err != nil {
+	if err := validatePolicy(p, m.cfg.QUICEnabled); err != nil {
 		return err
 	}
 	if p.Revision <= proc.revision {
 		return fmt.Errorf("policy revision %d must advance past %d", p.Revision, proc.revision)
 	}
-	if err := writeConfig(proc.cfgPath, p, m.cfg.DNSUpstream, m.cfg.IPv6Enabled); err != nil {
+	if err := writeConfig(proc.cfgPath, p, m.cfg.DNSUpstream, m.cfg.IPv6Enabled, m.cfg.QUICEnabled); err != nil {
 		return err
 	}
 	offset, err := fileSize(proc.logPath)
@@ -599,8 +627,8 @@ func MAC(name string) string {
 	return fmt.Sprintf("fa:43:25:%02x:%02x:%02x", sum[0], sum[1], sum[2])
 }
 
-func writeConfig(path string, p policy.Policy, dnsUpstream string, ipv6Enabled bool) error {
-	if err := validatePolicy(p); err != nil {
+func writeConfig(path string, p policy.Policy, dnsUpstream string, ipv6Enabled, quicEnabled bool) error {
+	if err := validatePolicy(p, quicEnabled); err != nil {
 		return err
 	}
 	if err := validateIPv6RuleCapability(p.Allow, p.Deny, ipv6Enabled); err != nil {
@@ -636,14 +664,14 @@ func writeConfig(path string, p policy.Policy, dnsUpstream string, ipv6Enabled b
 
 // validatePolicy rejects rule forms the configured gvproxy policy engine
 // cannot enforce.
-func validatePolicy(p policy.Policy) error {
+func validatePolicy(p policy.Policy, quicEnabled bool) error {
 	if err := validatePolicyRules(p.Allow, "allow"); err != nil {
 		return err
 	}
 	if err := validatePolicyRules(p.Deny, "deny"); err != nil {
 		return err
 	}
-	if err := policy.ValidateEnforcement(p.Allow, p.Deny); err != nil {
+	if err := policy.ValidateEnforcementWith(p.Allow, p.Deny, policy.Capabilities{QUIC: quicEnabled}); err != nil {
 		return err
 	}
 	return validatePolicyPorts(p.Ports)
