@@ -73,7 +73,7 @@ func TestRenderConfigSupportsLoopbackIPv6AndUDP(t *testing.T) {
 			{Host: 8080, Guest: 3000, Proto: "tcp", HostIP: "::1"},
 			{Host: 8081, Guest: 3001, Proto: "udp", HostIP: "127.0.0.1"},
 		},
-	}, "", false)
+	}, "", true)
 	for _, want := range []string{`"[::1]:8080": "guest-ipv6:3000"`, `"udp:127.0.0.1:8081": "192.168.127.3:3001"`} {
 		if !strings.Contains(cfg, want) {
 			t.Fatalf("missing %q in config:\n%s", want, cfg)
@@ -169,8 +169,10 @@ func TestValidatePolicyFailsClosedForUnsupportedRules(t *testing.T) {
 		{name: "empty domain glob", rule: policy.Rule{Protocol: "tcp", Domain: "api[!].example.test", Port: 443}},
 		{name: "missing cidr", rule: policy.Rule{Protocol: "tcp", Port: 443}},
 		{name: "invalid cidr", rule: policy.Rule{Protocol: "tcp", CIDR: "registry.example", Port: 443}},
+		{name: "ambiguous mapped cidr", rule: policy.Rule{Protocol: "tcp", CIDR: "::ffff:0:0/95", Port: 443}},
 		{name: "invalid protocol", rule: policy.Rule{Protocol: "icmp", CIDR: "192.0.2.1/32"}},
 		{name: "ip literal as domain", rule: policy.Rule{Protocol: "tcp", Domain: "192.0.2.10", Port: 443}},
+		{name: "unverified UDP domain", rule: policy.Rule{Protocol: "udp", Domain: "h3.example.test", Port: 443}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -178,6 +180,54 @@ func TestValidatePolicyFailsClosedForUnsupportedRules(t *testing.T) {
 				t.Fatal("unsupported policy must be rejected")
 			}
 		})
+	}
+}
+
+func TestIPv6HostForwardRequiresExplicitCapability(t *testing.T) {
+	ports := []policy.Port{{Host: 8080, Guest: 3000, Proto: "tcp", HostIP: "::1"}}
+	if err := validateIPv6PortCapability(ports, false); err == nil {
+		t.Fatal("IPv6 host forward accepted while the capability is disabled")
+	}
+	if err := validateIPv6PortCapability(ports, true); err != nil {
+		t.Fatalf("explicit IPv6 host forward rejected: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Ports: ports}, "", false); err == nil {
+		t.Fatal("disabled IPv6 host forward was rendered")
+	}
+	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Ports: ports}, "", true); err != nil {
+		t.Fatalf("explicit IPv6 host forward rejected: %v", err)
+	}
+}
+
+func TestIPv6CIDRRuleRequiresExplicitCapability(t *testing.T) {
+	rules := []policy.Rule{{Protocol: "tcp", CIDR: "2001:db8::/32", Port: 443}}
+	if err := validateIPv6RuleCapability(rules, nil, false); err == nil {
+		t.Fatal("IPv6 CIDR accepted while the capability is disabled")
+	}
+	if err := validateIPv6RuleCapability(rules, nil, true); err != nil {
+		t.Fatalf("explicit IPv6 CIDR rejected: %v", err)
+	}
+	if err := validateIPv6RuleCapability([]policy.Rule{{Protocol: "tcp", CIDR: "192.0.2.0/24", Port: 443}}, nil, false); err != nil {
+		t.Fatalf("IPv4 CIDR rejected: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Allow: rules}, "", false); err == nil {
+		t.Fatal("disabled IPv6 CIDR rule was rendered")
+	}
+	cfg, err := os.ReadFile(path)
+	if err == nil && strings.Contains(string(cfg), "2001:db8::/32") {
+		t.Fatal("disabled IPv6 CIDR rule reached the gateway config")
+	}
+	if err := writeConfig(path, policy.Policy{SandboxID: "ipv6", Allow: rules}, "", true); err != nil {
+		t.Fatalf("explicit IPv6 CIDR rule rejected: %v", err)
+	}
+	cfg, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg), `"2001:db8::/32"`) {
+		t.Fatalf("IPv6 CIDR rule missing from config:\n%s", cfg)
 	}
 }
 

@@ -603,6 +603,12 @@ func writeConfig(path string, p policy.Policy, dnsUpstream string, ipv6Enabled b
 	if err := validatePolicy(p); err != nil {
 		return err
 	}
+	if err := validateIPv6RuleCapability(p.Allow, p.Deny, ipv6Enabled); err != nil {
+		return err
+	}
+	if err := validateIPv6PortCapability(p.Ports, ipv6Enabled); err != nil {
+		return err
+	}
 	if err := validateDomainUpstream(p, dnsUpstream); err != nil {
 		return err
 	}
@@ -743,6 +749,40 @@ func validatePolicyPorts(ports []policy.Port) error {
 	return nil
 }
 
+func validateIPv6RuleCapability(allow, deny []policy.Rule, ipv6Enabled bool) error {
+	if ipv6Enabled {
+		return nil
+	}
+	for _, scope := range []struct {
+		name  string
+		rules []policy.Rule
+	}{{"allow", allow}, {"deny", deny}} {
+		for index, rule := range scope.rules {
+			if rule.CIDR == "" {
+				continue
+			}
+			ip, _, err := net.ParseCIDR(rule.CIDR)
+			if err == nil && ip.To4() == nil {
+				return fmt.Errorf("%s rule %d: IPv6 CIDR requires the experimental IPv6 capability", scope.name, index)
+			}
+		}
+	}
+	return nil
+}
+
+func validateIPv6PortCapability(ports []policy.Port, ipv6Enabled bool) error {
+	if ipv6Enabled {
+		return nil
+	}
+	for index, port := range ports {
+		ip := net.ParseIP(port.HostIP)
+		if ip != nil && ip.Equal(net.IPv6loopback) {
+			return fmt.Errorf("port %d: IPv6 host forwarding requires the experimental IPv6 capability", index)
+		}
+	}
+	return nil
+}
+
 func portProto(port policy.Port) string {
 	protocol := strings.ToLower(strings.TrimSpace(port.Proto))
 	if protocol == "" {
@@ -835,6 +875,12 @@ func (m *Manager) SetPorts(ctx context.Context, name string, ports []policy.Port
 	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("gateway for %s is not running", name)
+	}
+	if err := validatePolicyPorts(ports); err != nil {
+		return err
+	}
+	if err := validateIPv6PortCapability(ports, m.cfg.IPv6Enabled); err != nil {
+		return err
 	}
 	if err := waitServicesAPI(ctx, proc); err != nil {
 		return err

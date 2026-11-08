@@ -4,6 +4,7 @@ package policy
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"path"
 	"strings"
 )
@@ -114,12 +115,28 @@ func ValidateEnforcement(allow, deny []Rule) error {
 	return nil
 }
 
-func validateEnforcementRule(rule Rule) error {
-	if rule.Domain == "" {
-		return nil
+func ambiguousIPv4MappedPrefix(cidr string) bool {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+	if err != nil || !prefix.Addr().Is6() {
+		return false
 	}
-	if net.ParseIP(strings.TrimSpace(rule.Domain)) != nil {
+	mappedBase, err := netip.ParseAddr("::ffff:0:0")
+	if err != nil {
+		return true
+	}
+	masked := prefix.Masked()
+	return masked.Addr().Is4In6() || (prefix.Bits() < 96 && masked.Contains(mappedBase))
+}
+
+func validateEnforcementRule(rule Rule) error {
+	if rule.Domain != "" && net.ParseIP(strings.TrimSpace(rule.Domain)) != nil {
 		return errors.New("domain rule must not be an IP literal; use a CIDR rule")
+	}
+	if rule.Domain != "" && normalizedProtocol(rule.Protocol) == "udp" {
+		return errors.New("UDP domain policy requires a verified QUIC-capable runtime")
+	}
+	if rule.CIDR != "" && ambiguousIPv4MappedPrefix(rule.CIDR) {
+		return errors.New("IPv4-mapped CIDR prefixes are unsupported")
 	}
 	return nil
 }
