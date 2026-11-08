@@ -49,6 +49,9 @@ func TestRenderConfig(t *testing.T) {
 	if strings.Contains(cfg, "ipv6Enabled:") {
 		t.Fatal("IPv6 must remain disabled by default")
 	}
+	if strings.Contains(cfg, ipv6HostServicesGuest) {
+		t.Fatal("IPv6 host-services NAT entry must remain disabled by default")
+	}
 }
 
 func TestRenderConfigEnablesExperimentalIPv6Explicitly(t *testing.T) {
@@ -56,12 +59,47 @@ func TestRenderConfigEnablesExperimentalIPv6Explicitly(t *testing.T) {
 	if !strings.Contains(cfg, "  ipv6Enabled: true\n") {
 		t.Fatalf("explicit IPv6 config missing:\n%s", cfg)
 	}
+	if !strings.Contains(cfg, "  nat:\n    192.168.127.254: 127.0.0.1\n") {
+		t.Fatalf("IPv4 host-services NAT entry missing:\n%s", cfg)
+	}
+	wantNAT := "    \"" + ipv6HostServicesGuest + "\": \"" + ipv6HostServicesHost + "\"\n"
+	if !strings.Contains(cfg, wantNAT) {
+		t.Fatalf("explicit IPv6 host-services NAT entry %q missing:\n%s", wantNAT, cfg)
+	}
+	if got := strings.Count(cfg, ipv6HostServicesGuest); got != 1 {
+		t.Fatalf("IPv6 host-services NAT entry rendered %d times, want 1:\n%s", got, cfg)
+	}
 	manager, err := New(Config{GVProxy: "/bin/true", RunDir: t.TempDir(), IPv6Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !manager.IPv6Enabled() {
 		t.Fatal("manager failed to report explicit IPv6 capability")
+	}
+}
+
+func TestIPv6HostServicesNATAddressDiscipline(t *testing.T) {
+	guest := net.ParseIP(ipv6HostServicesGuest)
+	if guest == nil || guest.To4() != nil {
+		t.Fatalf("host-services guest address %q is not a global-shape IPv6 address", ipv6HostServicesGuest)
+	}
+	_, guestPrefix, err := net.ParseCIDR("fd72:6865:6963::/64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guestPrefix.Contains(guest) {
+		t.Fatalf("host-services address %s must stay outside the guest /64", ipv6HostServicesGuest)
+	}
+	_, ula, err := net.ParseCIDR("fc00::/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ula.Contains(guest) {
+		t.Fatalf("host-services address %s is not an IPv6 ULA", ipv6HostServicesGuest)
+	}
+	host := net.ParseIP(ipv6HostServicesHost)
+	if host == nil || !host.IsLoopback() {
+		t.Fatalf("host-services destination %q is not host loopback", ipv6HostServicesHost)
 	}
 }
 
