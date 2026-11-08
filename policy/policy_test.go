@@ -40,7 +40,6 @@ func TestUnsupportedDomainConfigurationsFailClosed(t *testing.T) {
 		allow []Rule
 		deny  []Rule
 	}{
-		{"udp domain", []Rule{{Protocol: "udp", Domain: "api.example.test"}}, nil},
 		{"overlapping CIDR and domain deny", []Rule{{Protocol: "tcp", CIDR: "0.0.0.0/0"}}, []Rule{{Protocol: "tcp", Domain: "secret.example.test", Port: 443}}},
 	}
 	for _, tt := range tests {
@@ -59,6 +58,27 @@ func TestUnsupportedDomainConfigurationsFailClosed(t *testing.T) {
 	}
 	if got := Check(allowed, nil, Request{Protocol: "tcp", Domain: "api.example.test", Port: 443}); !got.Allow {
 		t.Fatalf("supported positive control denied: %+v", got)
+	}
+}
+
+func TestUDPDomainPolicyFailsClosedWithoutRuntimeCapability(t *testing.T) {
+	allow := []Rule{{ID: "h3", Protocol: "udp", Domain: "h3.example.test", Port: 18443}}
+	if err := ValidateEnforcement(allow, nil); err == nil {
+		t.Fatal("UDP domain policy accepted without verified QUIC capability")
+	}
+	if got := Check(allow, nil, Request{Protocol: "udp", Domain: "h3.example.test", Port: 18443}); got.Allow {
+		t.Fatalf("unverified QUIC policy allowed traffic: %+v", got)
+	}
+}
+
+func TestIPv4MappedPrefixesAreRejected(t *testing.T) {
+	for _, cidr := range []string{"::ffff:0:0/95", "::ffff:192.0.2.0/120"} {
+		if err := ValidateEnforcement([]Rule{{Protocol: "tcp", CIDR: cidr}}, nil); err == nil {
+			t.Fatalf("ambiguous IPv4-mapped CIDR %q was accepted", cidr)
+		}
+	}
+	if err := ValidateEnforcement([]Rule{{Protocol: "tcp", CIDR: "2001:db8::/32"}}, nil); err != nil {
+		t.Fatalf("ordinary IPv6 CIDR rejected: %v", err)
 	}
 }
 
